@@ -1674,7 +1674,10 @@ export class P2PCommandRouter {
    * legacy command 1961 (P2P_ON_OFF_LOCK) in a CMD_SET_PAYLOAD (1350) envelope repeated DIRECT_CMD_SENDS×.
    */
   private async sendLegacyLockActuate(sn: string, cmd: Ff09Identity): Promise<void> {
-    const resolved = await this.resolveSession(sn, { waitLevel2: "settle" });
+    await this.resolveSession(sn, { waitLevel2: "settle" });
+    const dev = this.recordFor(sn);
+    const raw = dev?.raw as Record<string, any> | undefined;
+    const lockChannel = typeof raw?.device_channel === "number" ? raw.device_channel : 0;
     const lockPublicKey = await this.deps.mega.getDevicePublicKey(sn);
     const outerJson = buildLegacyLockPayload({
       engage: cmd.engage,
@@ -1683,19 +1686,19 @@ export class P2PCommandRouter {
       shortUserId: cmd.shortUserId,
       deviceSn: cmd.deviceSn,
       lockPublicKey,
-      channel: resolved.channel,
+      channel: lockChannel,
     });
 
     await this.sendBySessionLevel(sn, {
-      l1: async ({ session, channel }) => {
+      l1: async ({ session }) => {
         for (let i = 0; i < DIRECT_CMD_SENDS; i++) {
-          session.sendStringPayloadCommand(CommandType.CMD_SET_PAYLOAD, outerJson, channel);
+          session.sendStringPayloadCommand(CommandType.CMD_SET_PAYLOAD, outerJson, lockChannel);
           if (i < DIRECT_CMD_SENDS - 1) await sleep(200);
         }
       },
-      l2: async ({ session, channel }) => {
+      l2: async ({ session }) => {
         for (let i = 0; i < DIRECT_CMD_SENDS; i++) {
-          session.sendRawLevel2(outerJson, channel, CommandType.CMD_SET_PAYLOAD);
+          session.sendRawLevel2(outerJson, lockChannel, CommandType.CMD_SET_PAYLOAD);
           if (i < DIRECT_CMD_SENDS - 1) await sleep(200);
         }
       },
