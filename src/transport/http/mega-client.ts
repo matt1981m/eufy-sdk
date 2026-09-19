@@ -337,6 +337,8 @@ export class MegaHttpClient {
   private readonly logger: Logger;
   /** Remembered working Content-Type per host (the gateway is picky + inconsistent). */
   private readonly contentTypeByHost = new Map<string, string>();
+  /** Device public keys fetched from cloud (e.g. for legacy P2P locks). Keyed by deviceSn. */
+  private readonly devicePublicKeys = new Map<string, string>();
   /** True while a `/passport/login` round trip is in flight — see {@link canReauthenticate}. */
   private loggingIn = false;
   /** The one in-flight re-login every call rejected on the same dead token waits on. */
@@ -973,6 +975,36 @@ export class MegaHttpClient {
       ecc_private_key?: string;
       private_key?: string;
     }>;
+  }
+
+  /**
+   * Fetch a device's public key from the cloud (used for legacy lock P2P ECDH key derivation).
+   * Endpoint: `/v1/app/public_key/query?device_sn=${deviceSn}&type=${type}` on the security-app host.
+   */
+  async getDevicePublicKey(deviceSn: string, type = 2): Promise<string> {
+    const cached = this.devicePublicKeys.get(deviceSn);
+    if (cached) return cached;
+
+    const host = this.securityAppHost();
+    const url = `https://${host}/v1/app/public_key/query?device_sn=${encodeURIComponent(deviceSn)}&type=${type}`;
+    const res = await fetch(url, {
+      method: "GET",
+      headers: {
+        ...this.baseHeaders(),
+        ...this.authTokenHeaders(),
+      },
+      signal: AbortSignal.timeout(15_000),
+    });
+    const text = await res.text();
+    const env = parseMaybeJson(text) as ApiEnvelope<{ public_key: string }>;
+    if (res.status !== 200 || env?.code !== 0 || !env?.data?.public_key) {
+      throw new Error(
+        `Failed to fetch device public key for ${deviceSn} (${res.status}/${env?.code}): ${env?.msg ?? text}`,
+      );
+    }
+    const pubKey = env.data.public_key;
+    this.devicePublicKeys.set(deviceSn, pubKey);
+    return pubKey;
   }
 
   /** Build the /passport/login body (verify_code empty unless 2FA). */

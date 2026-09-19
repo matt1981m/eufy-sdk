@@ -34,3 +34,4 @@ export { P2P_STATION_WAITS } from "./command-router.js";
 // and live in model/, not here. This layer owns only the router's envelope ids (./envelope).
 // codec.ts has generic decode/encode helper names → namespace to avoid flat collisions.
 export * as p2pCodec from "./codec.js";
+export * from "./legacy-lock.js";

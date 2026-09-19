@@ -29,6 +29,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { CONNECT_TIMEOUT_MS, P2PSession, type P2PFrame } from "./p2p-session.js";
 import { buildDirectBinaryBody } from "./write-commands.js";
 import { CommandType } from "./commands.js";
+import { isLegacyLock, buildLegacyLockPayload } from "./legacy-lock.js";
 import {
   buildFf09Frame,
   buildFf09QueryFrame,
@@ -1643,6 +1644,11 @@ export class P2PCommandRouter {
    * bytes and never the routing channel — that's re-resolved here from the device record.
    */
   private async sendFf09Actuate(sn: string, cmd: Ff09Identity): Promise<void> {
+    const dev = this.recordFor(sn);
+    if (isLegacyLock(dev?.model, sn)) {
+      await this.sendLegacyLockActuate(sn, cmd);
+      return;
+    }
     const resolved = await this.resolveSession(sn, { waitLevel2: true });
     const frame = buildFf09Frame({
       engage: cmd.engage,
@@ -1659,6 +1665,41 @@ export class P2PCommandRouter {
       0,
       resolved,
     );
+  }
+
+  /**
+   * **Legacy lock actuation over P2P** — for older smart locks (T8520, T8500, T8510, T8501, etc.)
+   * that do not support modern ff09 framing. Queries the lock's ECDH public key from the cloud,
+   * derives the ECIES key material, encrypts the command with AES-128-CBC, and dispatches
+   * legacy command 1961 (P2P_ON_OFF_LOCK) in a CMD_SET_PAYLOAD (1350) envelope repeated DIRECT_CMD_SENDS×.
+   */
+  private async sendLegacyLockActuate(sn: string, cmd: Ff09Identity): Promise<void> {
+    const resolved = await this.resolveSession(sn, { waitLevel2: "settle" });
+    const lockPublicKey = await this.deps.mega.getDevicePublicKey(sn);
+    const outerJson = buildLegacyLockPayload({
+      engage: cmd.engage,
+      adminUserId: cmd.adminUserId,
+      username: cmd.username,
+      shortUserId: cmd.shortUserId,
+      deviceSn: cmd.deviceSn,
+      lockPublicKey,
+      channel: resolved.channel,
+    });
+
+    await this.sendBySessionLevel(sn, {
+      l1: async ({ session, channel }) => {
+        for (let i = 0; i < DIRECT_CMD_SENDS; i++) {
+          session.sendStringPayloadCommand(CommandType.CMD_SET_PAYLOAD, outerJson, channel);
+          if (i < DIRECT_CMD_SENDS - 1) await sleep(200);
+        }
+      },
+      l2: async ({ session, channel }) => {
+        for (let i = 0; i < DIRECT_CMD_SENDS; i++) {
+          session.sendRawLevel2(outerJson, channel, CommandType.CMD_SET_PAYLOAD);
+          if (i < DIRECT_CMD_SENDS - 1) await sleep(200);
+        }
+      },
+    });
   }
 
   /**
